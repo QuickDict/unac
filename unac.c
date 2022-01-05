@@ -13665,8 +13665,8 @@ int unac_string_utf16(const char* in, size_t in_length,
 		      char** outp, size_t* out_lengthp)
 {
   char* out;
-  int out_size;
-  int out_length;
+  size_t out_size;
+  size_t out_length;
   int i;
 
   out_size = in_length > 0 ? in_length : 1024;
@@ -13873,9 +13873,9 @@ int unac_string(const char* charset,
     *out_lengthp = 0;
   } else {
     char* utf16 = 0;
-    int utf16_length = 0;
+    size_t utf16_length = 0;
     char* utf16_unaccented = 0;
-    int utf16_unaccented_length = 0;
+    size_t utf16_unaccented_length = 0;
   
     if(convert(charset, utf16be(), in, in_length, &utf16, &utf16_length) < 0) {
       return -1;
