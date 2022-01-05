@@ -1,0 +1,4 @@
+patch.*
+*.rpm
+*.tar.gz
+autom4te.cache

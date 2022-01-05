@@ -1,0 +1,106 @@
+Debian package building hints
+
+Building a new Debian package from the CVS Tree
+-----------------------------------------------
+
+The debian related files and packaging are in the debian_branch branch
+of the CVS tree. When a debian package is released the complete source
+tree of the corresponding unac release is merged into the debian_branch
+branch and tagged. 
+
+In addition a debian specific tag must be added to the regular version
+tag of the main branch. It has the following form:
+
+unac-2-11 must be tagged upstream_version_2_11
+
+In command line style, just after tagging the main unac release you
+should do the following:
+
+#
+# Tag upstream version
+#
+cvs co unac
+( cd unac ; cvs tag upstream_version_X_X_X )
+#
+# Copy the tarbal of the distribution to upper directory (make dist if 
+# necessary) and note that it must be renamed with an UNDERSCORE after
+# the alpha name (unac- becomes unac_)
+#
+( cd unac ; make dist ; cp unac-X.X.X.tar.gz ../unac_X.X.X.orig.tar.gz )
+#
+# Extract the debian branch.
+# Name the directory according to upstream version otherwise debuild
+# is confused
+#
+cvs co -r debian_potato -d unac-X.X.X unac
+#
+# Untar the distribution in the Debian branch. That will override
+# files and add new ones. Using merge (cvs update -j) is not fit
+# for this purpose because, for instance, the .version and the
+# ChangeLog files will always conflict.
+#
+tar -zxvf unac_X.X.X.orig.tar.gz
+#
+# Now we want to work within the cvs tree
+#
+cd unac-X.X.X
+#
+# See which files have been removed from the upstream
+#
+diff --exclude=CVS  --exclude='.#*' --exclude='*~' --exclude='*.rpm' --exclude='*.gz' --brief -r . ../unac 
+#
+# Remove the files manualy by 
+# cvs delete -f file
+# one by one.
+#
+cvs delete -f ...
+#
+# At that point a cvs update will show files with a question mark,
+# those files were added since the last distribution and must also
+# be added to the debian branch.
+#
+cvs add ...
+#
+# Update the changelog and review the other files
+#
+debchange --newversion X.X.X-1 "New upstream version"
+#
+# Finaly attempt to build the packages (binary + sources)
+# The -i asks debuild to ignore CVS related files
+# CHECK THE WARNINGS IN THE OUTPUT !!!!
+#
+debuild -uc -us -i'CVS|\.#|.cvsignore'
+#
+# Upload to debian or (if not debian dev) upload to ftp space and ring
+# the bell of the debian developer (loic@debian.org or check
+# http://packages.debian.org/unstable/devel/libunac-dev.html to get
+# the name of the current debian developer)
+#
+cvs commit -m 'New upstream version X.X.X' 
+cvs tag debian_version_X_X_X-1
+#
+# For paranoid checking, do the package building as instructed below
+#
+
+
+Package building
+----------------
+
+Make sure $HOME/local exists.
+
+For savannah users:
+CVS_RSH=ssh CVSROOT=subversions.gnu.org:/cvsroot/unac cvs-buildpackage -W$HOME/local/ports/tmp -Munac -Punac -VX.X.X-X -rfakeroot
+
+For anonymous users:
+% export CVSROOT=:pserver:anoncvs@subversions.gnu.org:/cvsroot/unac
+% cvs login
+% cvs-buildpackage -W$HOME/local/ports/tmp -Munac -Punac -VX.X.X-X -rfakeroot
+% cvs logout
+
+The resulting debian distribution is made of 2 debian packages (*.deb),
+a .diff file that shows the differences between the debian CVS branch and
+the main branch, a .dsc file, a .changes file. All are in $HOME/local/ports/tmp.
+The .deb and .diff files must be distributed all together, the .dsc and
+.changes must be published on the debian page 
+(see http://www.genibel.org/debian for examples of Debian packages files).
+

@@ -1,0 +1,493 @@
+#
+# Copyright (C) 2000, 2001, 2002, 2003 Loic Dachary <loic@senga.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+#
+#
+# Generate a table mapping UTF-16 characters to their unaccented
+# equivalent. Some characters such as fi (one character) are expanded
+# into two letters : f and i. In Unicode jargon it means that the table
+# maps each character to its compatibility decomposition in which marks
+# were stripped.
+#
+# The format of the $base file can be found at:
+# http://www.unicode.org/Public/3.2-Update/UnicodeData-3.2.0.html
+#
+use strict;
+
+use Getopt::Long;
+
+sub main {
+    my($base) = "UnicodeData-@UNICODE_VERSION@.txt";
+    my($verbose);
+    my($source);
+    my($reference);
+    my($srcdir) = $ENV{'srcdir'} || '.';
+
+    GetOptions("verbose+" => \$verbose,
+	       "database=s" => \$base,
+	       "source!" => \$source,
+               "reference!" => \$reference);
+    
+    my(%decomposition, %mark, %value2name, %name2value);
+    my(%ranges);
+
+    #
+    # Build internal version of the UnicodeData text file with
+    # indices that will help the generation of accented to unaccented
+    # table.
+    #
+    open(FILE, "<$base") or die "cannot open $base for reading : $!";
+    while(<FILE>) {
+	next if(/^\s*\#/);    # Skip comments
+	my($code_value,
+	   $character_name,
+	   $general_category,
+	   $canonical_combining_classes,
+	   $bidirectional_category,
+	   $character_decomposition_mapping,
+	   $decimal_digit_value,
+	   $digit_value,
+	   $numeric_value,
+	   $mirrored,
+	   $unicode_1_0_name,
+	   $_10646_comment_field,
+	   $uppercase_mapping,
+	   $lowercase_mapping,
+	   $titlecase_mapping) = split(/;/, $_);
+	#
+	# Generate ranges of values that are not explicitly listed.
+	# CJK ideographs for instance.
+	#
+	if($character_name =~ /^<(.*), (First|Last)>/) {
+	    $ranges{$1}{$2} = $code_value;
+	}
+	if($character_decomposition_mapping =~ /(<.*>)?\s*(.+)/) {
+	    $decomposition{$code_value} = $2;
+	} elsif($character_name =~ /\sWITH\s/) {
+	    #
+	    # Something in the name of the character tells us that
+	    # reworking the name may provide us with a decomposition
+	    # even when no decomposition is defined.
+	    #
+	    $decomposition{$code_value} = '';
+	}
+
+	if($general_category =~ /^M/) {
+	    $mark{$code_value} = 1;
+	}
+	$value2name{$code_value} = $character_name;
+	$name2value{$character_name} = $code_value;
+    }
+    close(FILE);
+
+    my($from, $to);
+    require "$srcdir/unaccent-local-map.perl";
+    while(($from, $to) = each(%::localmap)) {
+	if(!exists($name2value{$from})) {
+	    print STDERR "unaccent-local-map.perl: $from is not a known character name in $base\n";
+	} else {
+	    my(@decomposition);
+	    my($to_name);
+	    while($to_name = shift(@$to)) {
+		if(!exists($name2value{$to_name})) {
+		    print STDERR "unaccent-local-map.perl: $to_name is not a known character name in $base (in decomposition of $from)\n";		    
+		} else {
+		    push(@decomposition, $name2value{$to_name});
+		}
+	    }
+	    $decomposition{$name2value{$from}} = join(" ", @decomposition);
+	}
+    }
+
+    #
+    # Generate compatibility decomposition and strip marks
+    # (marks == diacritics == accents)
+    #
+    while(($from, $to) = each(%decomposition)) {
+	my(@decomposition);
+	my(@code_values) = ($from);
+	my($code_value);
+	#
+	# Recursively decompose OR strip WITH.* OR strip marks.
+	#
+	while(@code_values) {
+	    my($code_value) = shift(@code_values);
+	    if(exists($decomposition{$code_value}) &&
+	       $decomposition{$code_value} ne '') {
+		#
+		# Decomposition is defined (when '' it means we suspect
+		# it may exist but we need to guess, cf WITH regexp below).
+		#
+		push(@code_values, split(' ', $decomposition{$code_value}));
+	    } elsif($value2name{$code_value} =~ /(.*?)\s+WITH .*$/ &&
+		    exists($name2value{$1})) {
+		#
+		# Strip part of the name that we decide to interpret
+		# as a diacritic indication.
+		#
+		push(@code_values, $name2value{$1});
+	    } elsif(!exists($mark{$code_value})) {
+		#
+		# Just ignore marks (i.e. diacritics)
+		#
+		push(@decomposition, $code_value);
+	    } 
+	}
+	if($decomposition[0] ne '' && $decomposition[0] ne $from) {
+	    $decomposition{$from} = "@decomposition";
+	} else {
+	    delete($decomposition{$from});
+	}
+    }
+
+    reference(\%decomposition, $verbose) if($reference);
+    source(\%decomposition, \%value2name, $verbose) if($source);
+}
+
+#
+# Generate machine readable file on stdout, mapping all UTF-16 codes
+# to their unaccented replacement. This file can be compared
+# with the output of a program using the libunac library for
+# the same purpose.
+#
+sub reference {
+    my($decomposition, $verbose) = @_;
+
+    my($code_value);
+    foreach $code_value (0 .. 0xFFFF) {
+	$code_value = uc(sprintf("%04x", $code_value));
+	print "$code_value";
+	if(exists($decomposition->{$code_value})) {
+	    print " => $decomposition->{$code_value}\n";
+	} else {
+	    print "\n";
+	}
+    }
+}
+
+#
+# Read file and store its content into a hash table.
+# Each hash table key is found in the file itself, as described
+# below. It is used to read source files (*.h *.c), store its
+# content internally so that it can be modified and then write
+# it back using the spit.
+#
+# The input is divided in chuncks according to special markers. For
+# instance:
+#
+# before
+# /* Generated by builder. Do not modify. Start a_tag */
+# bla bla
+# /* Generated by builder. Do not modify. End a_tag */
+# after
+# /* Generated by builder. Do not modify. Start b_tag */
+# more stuff
+# /* Generated by builder. Do not modify. End b_tag */
+# still something
+#
+# Will generate the following hash:
+#
+# {
+#   'list' => [ 1, a_tag, 2, b_tag, 3 ],
+#   '1' => "before\n",
+#   'a_tag' => undef,
+#   '2' => "after\n";
+#   'b_tag' => undef,
+#   '3' => "still something\n"
+# }
+#
+# The caller may then assign a string to the a_tag and b_tag entries
+# and then call the spit function to rebuild the file.
+#
+sub slurp {
+    my($file) = @_;
+    my(%content);
+    my($count) = 1;
+    my(@lines);
+    open(FILE, "<$file") or die "cannot open $file for reading : $!";
+    while(<FILE>) {
+	if(/Do not modify. Start\s+(\w+)/i) {
+	    push(@{$content{'list'}}, $count);
+	    $content{$count} = join("", @lines); 
+	    $count++;
+	    push(@{$content{'list'}}, $1);
+	    @lines = ();
+	}
+	next if(/Do not modify. Start/i .. /Do not modify. End/i);
+	push(@lines, $_);
+    }
+    if(@lines) {
+	push(@{$content{'list'}}, $count);
+	$content{$count} = join("", @lines); 
+    }
+    close(FILE);
+    return \%content;
+}
+
+#
+# Write the $content hash generated by the slurp function to
+# the $file file. 
+#
+sub spit {
+    my($file, $content) = @_;
+    open(FILE, ">$file") or die "cannot open $file for writing : $!";
+    my($tag);
+    foreach $tag (@{$content->{'list'}}) {
+	print(FILE "/* Generated by builder. Do not modify. Start $tag */\n") if($tag !~ /^\d+$/);
+	print FILE $content->{$tag};
+	print(FILE "/* Generated by builder. Do not modify. End $tag */\n") if($tag !~ /^\d+$/);
+    }
+    close(FILE);
+}
+
+#
+# Generate tables, defines and code in the unac.c and unac.h 
+# source files. The unac.c and unac.h files are substituted 
+# in place.
+#
+sub source {
+    my($decomposition, $name, $verbose) = @_;
+
+    my($csource) = slurp("unac.c");
+    my($hsource) = slurp("unac.h");
+
+    #
+    # First step is to create the content that will be included
+    # in the [ch]source.
+    #
+
+    #
+    # $comment : a human readable C comment containing 
+    # the information that is encoded in the tables and
+    # variables that follow.
+    #
+    my(@comment);
+    push(@comment, "/*\n");
+    my($from);
+    foreach $from (sort(keys(%$decomposition))) {
+	my($character_name) = $name->{$from};
+	$character_name = "??" if(!$character_name);
+	push(@comment, " * $from $character_name\n");
+	my($code_value);
+	foreach $code_value (split(' ', $decomposition->{$from})) {
+	    $character_name = $name->{$code_value} || "??";
+	    push(@comment, " * \t$code_value $character_name\n");
+	}
+    }
+    push(@comment, "*/\n");
+    my($comment) = join("", @comment);
+
+    #
+    # Select the best block size (the one that takes less space)
+    # to be used for tables holding the mapping between accented
+    # UTF16 characters and unaccented UTF16 characters.
+    #
+    # The idea is that most characters in UTF16 are not accented.
+    # Large parts if the UTF16 character table can be mapped to
+    # a single block that says : nothing to do.
+    #
+    # result: $best_blocks (array of blocks that contain exactly
+    #                       $block_count replacements. Each block
+    #                       is a string containing replacements 
+    #                       separated by |)
+    #         $best_indexes (array mapping block number to a block
+    #                        in the $best_blocks array)
+    #         $best_block_shift (the size of the block)
+    # 
+    # Within a block, if the character has no replacement the 0xFFFF 
+    # placeholder is inserted.
+    #
+    my($best_blocks);
+    my($best_indexes);
+    my($best_block_shift);
+    my($best_total_size) = 10 * 1024 * 1024; # arbitrary large, larger that UTF16 
+    my($block_shift);
+    #
+    # Try block sizes ranging from 2^2 (4) to 2^10 (1024).
+    #
+    foreach $block_shift (2 .. 10) {
+	my($block_count) = 1 << $block_shift;
+	my(@blocks, @indexes);
+	my($duplicate) = 0;
+	my(@values);
+	my($code_value);
+	#
+	# Create all blocks, using the current block size ($block_shift)
+	# and store them
+	#
+	foreach $code_value (0 .. 0x10000) {
+	    if($code_value > 0 && $code_value % $block_count == 0) {
+		my($block) = join("|", @values);
+		my($existing_block);
+		my($index) = 0;
+		my($found);
+		foreach $existing_block (@blocks) {
+		    if($block eq $existing_block) {
+			push(@indexes, $index);
+			$found = 1;
+			$duplicate++;
+			last;
+		    }
+		    $index++;
+		}
+		if(!$found) {
+		    push(@indexes, $index);
+		    push(@blocks, $block);
+		}
+		@values = ();
+	    }
+	    $code_value = uc(sprintf("%04x", $code_value));
+	    if(exists($decomposition->{$code_value})) {
+		push(@values, $decomposition->{$code_value});
+	    } else {
+		push(@values, "FFFF");
+	    }
+	}
+	print STDERR scalar(@blocks) . " blocks of " . $block_count . " entries, factorized $duplicate blocks\n\t" if($verbose);
+	#
+	# Calculate, in bytes, the memory space that would be used by the 
+	# blocks generated above if they were encoded in C.
+	#
+	my($block_size) = 0;
+	my($block);
+	#
+	# Each block entry is 2 bytes
+	#
+	foreach $block (@blocks) {
+	    my(@tmp) = split(/[| ]/, $block);
+	    $block_size += scalar(@tmp) * 2;
+	}
+	#
+	# Each block requires a pointer to the block array (4 bytes)
+	#
+	$block_size += scalar(@blocks) * 4;
+	#
+	# Positions of the entries in the block, for each block (2 bytes)
+	#
+	$block_size += $block_count * scalar(@blocks) * 2;
+	print STDERR "total block size = $block_size, " if($verbose);
+	my($index_size) = (1 << (16 - $block_shift)) * 2;
+	print STDERR "index size = " . $index_size . "\n\t" if($verbose);
+	my($total_size) = $block_size + $index_size;
+	print STDERR "total size = $total_size\n" if($verbose);
+
+	#
+	# Remind the blocks with the smallest memory footprint
+	#
+	if($total_size < $best_total_size) {
+	    $best_total_size = $total_size;
+	    $best_blocks = \@blocks;
+	    $best_indexes = \@indexes;
+	    $best_block_shift = $block_shift;
+	}
+    }
+
+    my($block_count) = scalar(@$best_blocks);
+    my($block_size) = 1 << $best_block_shift;
+
+    #
+    # Constants that depend on the block size.
+    # result : $defines
+    #
+    my($defines) = <<EOF;
+#define UNAC_BLOCK_SHIFT $best_block_shift
+#define UNAC_BLOCK_MASK ((1 << UNAC_BLOCK_SHIFT) - 1)
+#define UNAC_BLOCK_SIZE (1 << UNAC_BLOCK_SHIFT)
+#define UNAC_BLOCK_COUNT $block_count
+#define UNAC_INDEXES_SIZE (0x10000 >> UNAC_BLOCK_SHIFT)
+EOF
+    #
+    # Mapping block number to index in data_table or position table.
+    # result : $index_out
+    #
+    my($count) = 0;
+    my($index);
+    my($index_out) = "unsigned short unac_indexes[UNAC_INDEXES_SIZE] = {\n";
+    foreach $index (@$best_indexes) {
+	$count++;
+	$index_out .= sprintf("%4s,", $index);
+	if($count % 15 == 0) {
+	    $index_out .= "\n";
+	}
+    }
+    $index_out =~ s/,\s*\Z/\n/s;
+    $index_out .= "};\n";
+
+    #
+    # Generate the position table (map character number in block to
+    # position in the data string), the data_table that maps a block
+    # to a unsigned short array that contains the character (aka the
+    # data array) and the data arrays themselves that is a pure concatenation
+    # of all the unsigned short in a block. 
+    # result : $position_out, $data_table_out, $data_out
+    #
+    my(@positions_out);
+    my($highest_position) = 0;
+    my(@data_table_out);
+    my($data_table_out) = "unsigned short* unac_data_table[UNAC_BLOCK_COUNT] = {\n";
+    my(@data_out);
+    my($block_number) = 0;
+    my($block);
+    foreach $block (@$best_blocks) {
+	my(@index);
+	my($position) = 0;
+	my($entry);
+	my(@data);
+	foreach $entry (split('\|', $block)) {
+	    push(@index, $position);
+	    my(@tmp) = split(' ', $entry);
+	    push(@data, @tmp);
+	    $position += scalar(@tmp);
+	}
+	push(@index, $position);
+	$highest_position = $position if($position > $highest_position);
+	push(@positions_out, "/* $block_number */ { " . join(", ", @index) . " }");
+	push(@data_table_out, "unac_data$block_number");
+	push(@data_out, "unsigned short unac_data$block_number" . "[] = { 0x" . join(", 0x", @data) . " };\n");
+	$block_number++;
+    }
+    my($position_type) = $highest_position >= 256 ? "short" : "char";
+    my($positions_out) = "unsigned $position_type unac_positions[UNAC_BLOCK_COUNT][UNAC_BLOCK_SIZE + 1] = {\n";
+
+    $positions_out .= join(",\n", @positions_out);
+    $positions_out .= "\n};\n";
+    my($data_out) = join("", @data_out);
+    $data_table_out .= join(",\n", @data_table_out);
+    $data_table_out .= "\n};\n";
+
+    #
+    # Tables declarations
+    # result : $declarations
+    #
+    my($declarations);
+    $declarations = <<EOF;
+extern unsigned short unac_indexes[UNAC_INDEXES_SIZE];
+extern unsigned $position_type unac_positions[UNAC_BLOCK_COUNT][UNAC_BLOCK_SIZE + 1];
+extern unsigned short* unac_data_table[UNAC_BLOCK_COUNT];
+EOF
+    for($block_number = 0; $block_number < $block_count; $block_number++) {
+	$declarations .= "extern unsigned short unac_data$block_number" . "[];\n";
+    }
+
+    $csource->{'tables'} = "$comment\n$index_out\n$positions_out\n$data_out\n$data_table_out";
+    $hsource->{'defines'} = $defines;
+    $hsource->{'declarations'} = $declarations;
+
+    spit("unac.c", $csource);
+    spit("unac.h", $hsource);
+}
+
+main();
