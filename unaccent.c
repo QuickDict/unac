@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
     const char* charset = argv[optind++];
 
     char* unaccented = 0;
-    int unaccented_length = 0;
+    size_t unaccented_length = 0;
 
     if(optind >= argc) {
 #define BUFFER_SIZE 10240
